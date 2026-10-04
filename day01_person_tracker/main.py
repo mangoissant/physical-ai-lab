@@ -7,18 +7,45 @@ from ultralytics import YOLO
 # -----------------------------
 MODEL_NAME = "yolo26n.pt"
 CAMERA_ID = 0
+
 CONFIDENCE = 0.5
 DEAD_ZONE = 0.15
 
+SERVO_CENTER = 90
+SERVO_MIN = 30
+SERVO_MAX = 150
+
+MAX_SERVO_OFFSET = 60
+
 
 # -----------------------------
-# AI 모델 로드
+# 가상 서보 컨트롤러
+# -----------------------------
+def calculate_servo_angle(error_x):
+
+    # 중앙에 가까우면 움직이지 않음
+    if abs(error_x) < DEAD_ZONE:
+        error_x = 0
+
+    servo_angle = SERVO_CENTER + error_x * MAX_SERVO_OFFSET
+
+    # 서보모터 허용 범위를 넘지 않도록 제한
+    servo_angle = max(
+        SERVO_MIN,
+        min(SERVO_MAX, servo_angle)
+    )
+
+    return int(servo_angle)
+
+
+# -----------------------------
+# AI 모델
 # -----------------------------
 model = YOLO(MODEL_NAME)
 
 
 # -----------------------------
-# 카메라 열기
+# 카메라
 # -----------------------------
 cap = cv2.VideoCapture(CAMERA_ID)
 
@@ -27,19 +54,22 @@ if not cap.isOpened():
 
 
 while True:
+
     success, frame = cap.read()
 
     if not success:
         print("카메라 프레임을 읽지 못했습니다.")
         break
 
-    # 거울처럼 보이도록 좌우 반전
     frame = cv2.flip(frame, 1)
 
     height, width = frame.shape[:2]
 
     frame_center_x = width // 2
     frame_center_y = height // 2
+
+    # 기본값
+    servo_angle = SERVO_CENTER
 
     # -----------------------------
     # AI inference
@@ -54,7 +84,7 @@ while True:
     people = []
 
     # -----------------------------
-    # 탐지 결과 중 사람만 찾기
+    # 사람 탐지
     # -----------------------------
     for box in result.boxes:
 
@@ -76,25 +106,31 @@ while True:
         )
 
     # -----------------------------
-    # 가장 크게 보이는 사람 추적
+    # 가장 큰 사람 선택
     # -----------------------------
     if people:
 
-        target = max(people, key=lambda person: person[0])
+        target = max(
+            people,
+            key=lambda person: person[0]
+        )
 
         _, x1, y1, x2, y2 = target
 
         person_center_x = (x1 + x2) // 2
         person_center_y = (y1 + y2) // 2
 
-        # 화면 중심 기준 오차
+        # -1 ~ +1 근처의 값
         error_x = (
             person_center_x - frame_center_x
         ) / (width / 2)
 
         # -----------------------------
-        # 방향 결정
+        # Controller
         # -----------------------------
+        servo_angle = calculate_servo_angle(error_x)
+
+        # 방향 표시
         if error_x < -DEAD_ZONE:
             direction = "LEFT"
 
@@ -131,29 +167,43 @@ while True:
             3
         )
 
-        # 결과 표시
         cv2.putText(
             frame,
-            f"{direction}  error={error_x:.2f}",
-            (20, 50),
+            f"{direction} error={error_x:.2f}",
+            (20, 45),
             cv2.FONT_HERSHEY_SIMPLEX,
-            1,
+            0.9,
             (0, 255, 0),
             2
         )
 
-    # 화면 중심점
-    cv2.circle(
+    # -----------------------------
+    # 가상 서보 상태 표시
+    # -----------------------------
+    cv2.putText(
         frame,
-        (frame_center_x, frame_center_y),
-        7,
-        (255, 255, 0),
-        -1
+        f"SERVO: {servo_angle} deg",
+        (20, 85),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.9,
+        (0, 255, 255),
+        2
     )
 
-    cv2.imshow("Physical AI - Person Tracker", frame)
+    # 화면 중앙
+    cv2.line(
+        frame,
+        (frame_center_x, 0),
+        (frame_center_x, height),
+        (255, 255, 0),
+        2
+    )
 
-    # q 누르면 종료
+    cv2.imshow(
+        "Physical AI - Virtual Servo Tracker",
+        frame
+    )
+
     if cv2.waitKey(1) & 0xFF == ord("q"):
         break
 
