@@ -17,19 +17,21 @@ SERVO_MAX = 150
 
 MAX_SERVO_OFFSET = 60
 
+# 0 ~ 1
+# 클수록 새 값을 빠르게 반영
+SMOOTHING_ALPHA = 0.9
+
 
 # -----------------------------
-# 가상 서보 컨트롤러
+# 서보 컨트롤러
 # -----------------------------
 def calculate_servo_angle(error_x):
 
-    # 중앙에 가까우면 움직이지 않음
     if abs(error_x) < DEAD_ZONE:
         error_x = 0
 
     servo_angle = SERVO_CENTER + error_x * MAX_SERVO_OFFSET
 
-    # 서보모터 허용 범위를 넘지 않도록 제한
     servo_angle = max(
         SERVO_MIN,
         min(SERVO_MAX, servo_angle)
@@ -53,6 +55,10 @@ if not cap.isOpened():
     raise RuntimeError("카메라를 열 수 없습니다.")
 
 
+# 이전 프레임에서 사용한 값
+smoothed_error = 0.0
+
+
 while True:
 
     success, frame = cap.read()
@@ -68,7 +74,6 @@ while True:
     frame_center_x = width // 2
     frame_center_y = height // 2
 
-    # 기본값
     servo_angle = SERVO_CENTER
 
     # -----------------------------
@@ -120,21 +125,29 @@ while True:
         person_center_x = (x1 + x2) // 2
         person_center_y = (y1 + y2) // 2
 
-        # -1 ~ +1 근처의 값
-        error_x = (
+        # 원본 error
+        raw_error = (
             person_center_x - frame_center_x
         ) / (width / 2)
 
         # -----------------------------
+        # Smoothing
+        # -----------------------------
+        smoothed_error = (
+            SMOOTHING_ALPHA * raw_error
+            + (1 - SMOOTHING_ALPHA) * smoothed_error
+        )
+
+        # -----------------------------
         # Controller
         # -----------------------------
-        servo_angle = calculate_servo_angle(error_x)
+        servo_angle = calculate_servo_angle(smoothed_error)
 
-        # 방향 표시
-        if error_x < -DEAD_ZONE:
+        # 방향
+        if smoothed_error < -DEAD_ZONE:
             direction = "LEFT"
 
-        elif error_x > DEAD_ZONE:
+        elif smoothed_error > DEAD_ZONE:
             direction = "RIGHT"
 
         else:
@@ -167,30 +180,51 @@ while True:
             3
         )
 
+        # 원본 error
         cv2.putText(
             frame,
-            f"{direction} error={error_x:.2f}",
+            f"RAW: {raw_error:.2f}",
             (20, 45),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.9,
+            0.8,
+            (0, 0, 255),
+            2
+        )
+
+        # smoothing 된 error
+        cv2.putText(
+            frame,
+            f"SMOOTH: {smoothed_error:.2f}",
+            (20, 80),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
             (0, 255, 0),
             2
         )
 
+        cv2.putText(
+            frame,
+            f"{direction}",
+            (20, 115),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (255, 255, 0),
+            2
+        )
+
     # -----------------------------
-    # 가상 서보 상태 표시
+    # 가상 서보 표시
     # -----------------------------
     cv2.putText(
         frame,
         f"SERVO: {servo_angle} deg",
-        (20, 85),
+        (20, 150),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.9,
+        0.8,
         (0, 255, 255),
         2
     )
 
-    # 화면 중앙
     cv2.line(
         frame,
         (frame_center_x, 0),
@@ -200,7 +234,7 @@ while True:
     )
 
     cv2.imshow(
-        "Physical AI - Virtual Servo Tracker",
+        "Physical AI - Smooth Servo Tracker",
         frame
     )
 
