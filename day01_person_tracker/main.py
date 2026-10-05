@@ -17,27 +17,50 @@ SERVO_MAX = 150
 
 MAX_SERVO_OFFSET = 60
 
-# 0 ~ 1
-# 클수록 새 값을 빠르게 반영
-SMOOTHING_ALPHA = 0.9
+SMOOTHING_ALPHA = 0.2
+
+# 한 프레임마다 서보가 움직일 수 있는 최대 각도
+MAX_SERVO_STEP = 3
 
 
 # -----------------------------
-# 서보 컨트롤러
+# 목표 서보 각도 계산
 # -----------------------------
-def calculate_servo_angle(error_x):
+def calculate_target_angle(error_x):
 
     if abs(error_x) < DEAD_ZONE:
         error_x = 0
 
-    servo_angle = SERVO_CENTER + error_x * MAX_SERVO_OFFSET
-
-    servo_angle = max(
-        SERVO_MIN,
-        min(SERVO_MAX, servo_angle)
+    target_angle = (
+        SERVO_CENTER
+        + error_x * MAX_SERVO_OFFSET
     )
 
-    return int(servo_angle)
+    target_angle = max(
+        SERVO_MIN,
+        min(SERVO_MAX, target_angle)
+    )
+
+    return int(target_angle)
+
+
+# -----------------------------
+# 서보 속도 제한
+# -----------------------------
+def move_servo_toward(
+    current_angle,
+    target_angle
+):
+
+    difference = target_angle - current_angle
+
+    if abs(difference) <= MAX_SERVO_STEP:
+        return target_angle
+
+    if difference > 0:
+        return current_angle + MAX_SERVO_STEP
+
+    return current_angle - MAX_SERVO_STEP
 
 
 # -----------------------------
@@ -55,8 +78,11 @@ if not cap.isOpened():
     raise RuntimeError("카메라를 열 수 없습니다.")
 
 
-# 이전 프레임에서 사용한 값
+# -----------------------------
+# 상태값
+# -----------------------------
 smoothed_error = 0.0
+current_servo_angle = SERVO_CENTER
 
 
 while True:
@@ -74,7 +100,7 @@ while True:
     frame_center_x = width // 2
     frame_center_y = height // 2
 
-    servo_angle = SERVO_CENTER
+    target_servo_angle = SERVO_CENTER
 
     # -----------------------------
     # AI inference
@@ -135,13 +161,24 @@ while True:
         # -----------------------------
         smoothed_error = (
             SMOOTHING_ALPHA * raw_error
-            + (1 - SMOOTHING_ALPHA) * smoothed_error
+            + (1 - SMOOTHING_ALPHA)
+            * smoothed_error
         )
 
         # -----------------------------
-        # Controller
+        # 목표 각도 계산
         # -----------------------------
-        servo_angle = calculate_servo_angle(smoothed_error)
+        target_servo_angle = calculate_target_angle(
+            smoothed_error
+        )
+
+        # -----------------------------
+        # 현재 각도를 목표 쪽으로 이동
+        # -----------------------------
+        current_servo_angle = move_servo_toward(
+            current_servo_angle,
+            target_servo_angle
+        )
 
         # 방향
         if smoothed_error < -DEAD_ZONE:
@@ -180,24 +217,22 @@ while True:
             3
         )
 
-        # 원본 error
         cv2.putText(
             frame,
             f"RAW: {raw_error:.2f}",
-            (20, 45),
+            (20, 40),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
+            0.7,
             (0, 0, 255),
             2
         )
 
-        # smoothing 된 error
         cv2.putText(
             frame,
             f"SMOOTH: {smoothed_error:.2f}",
-            (20, 80),
+            (20, 70),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
+            0.7,
             (0, 255, 0),
             2
         )
@@ -205,22 +240,32 @@ while True:
         cv2.putText(
             frame,
             f"{direction}",
-            (20, 115),
+            (20, 100),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
+            0.7,
             (255, 255, 0),
             2
         )
 
     # -----------------------------
-    # 가상 서보 표시
+    # 서보 상태 표시
     # -----------------------------
     cv2.putText(
         frame,
-        f"SERVO: {servo_angle} deg",
-        (20, 150),
+        f"TARGET: {target_servo_angle} deg",
+        (20, 140),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.8,
+        0.7,
+        (255, 0, 255),
+        2
+    )
+
+    cv2.putText(
+        frame,
+        f"CURRENT: {current_servo_angle} deg",
+        (20, 175),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
         (0, 255, 255),
         2
     )
@@ -234,7 +279,7 @@ while True:
     )
 
     cv2.imshow(
-        "Physical AI - Smooth Servo Tracker",
+        "Physical AI - Servo Motion",
         frame
     )
 
