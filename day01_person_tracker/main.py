@@ -2,32 +2,33 @@ import cv2
 from ultralytics import YOLO
 
 
-# -----------------------------
-# 설정
-# -----------------------------
+# ============================================================
+# CONFIG
+# ============================================================
+
 MODEL_NAME = "yolo26n.pt"
 CAMERA_ID = 0
 
 CONFIDENCE = 0.5
+
 DEAD_ZONE = 0.15
+SMOOTHING_ALPHA = 0.2
 
 SERVO_CENTER = 90
 SERVO_MIN = 30
 SERVO_MAX = 150
 
 MAX_SERVO_OFFSET = 60
-
-SMOOTHING_ALPHA = 0.2
-
-# 한 프레임마다 서보가 움직일 수 있는 최대 각도
 MAX_SERVO_STEP = 3
 
 
-# -----------------------------
-# 목표 서보 각도 계산
-# -----------------------------
+# ============================================================
+# CONTROL FUNCTIONS
+# ============================================================
+
 def calculate_target_angle(error_x):
 
+    # 중앙 근처라면 움직이지 않는다.
     if abs(error_x) < DEAD_ZONE:
         error_x = 0
 
@@ -44,46 +45,50 @@ def calculate_target_angle(error_x):
     return int(target_angle)
 
 
-# -----------------------------
-# 서보 속도 제한
-# -----------------------------
-def move_servo_toward(
-    current_angle,
-    target_angle
-):
+def move_servo_toward(current_angle, target_angle):
 
     difference = target_angle - current_angle
 
+    # 목표가 아주 가까우면 바로 도착
     if abs(difference) <= MAX_SERVO_STEP:
         return target_angle
 
+    # 오른쪽 방향으로 이동
     if difference > 0:
         return current_angle + MAX_SERVO_STEP
 
+    # 왼쪽 방향으로 이동
     return current_angle - MAX_SERVO_STEP
 
 
-# -----------------------------
-# AI 모델
-# -----------------------------
+# ============================================================
+# AI MODEL
+# ============================================================
+
 model = YOLO(MODEL_NAME)
 
 
-# -----------------------------
-# 카메라
-# -----------------------------
+# ============================================================
+# CAMERA
+# ============================================================
+
 cap = cv2.VideoCapture(CAMERA_ID)
 
 if not cap.isOpened():
     raise RuntimeError("카메라를 열 수 없습니다.")
 
 
-# -----------------------------
-# 상태값
-# -----------------------------
+# ============================================================
+# ROBOT STATE
+# ============================================================
+
 smoothed_error = 0.0
 current_servo_angle = SERVO_CENTER
 
+
+# ============================================================
+# MAIN LOOP
+# ============================================================
 
 while True:
 
@@ -100,11 +105,16 @@ while True:
     frame_center_x = width // 2
     frame_center_y = height // 2
 
+    # 기본 상태
+    tracking = False
+
+    raw_error = 0.0
     target_servo_angle = SERVO_CENTER
 
-    # -----------------------------
-    # AI inference
-    # -----------------------------
+    # --------------------------------------------------------
+    # PERCEPTION
+    # --------------------------------------------------------
+
     result = model(
         frame,
         verbose=False,
@@ -114,9 +124,6 @@ while True:
 
     people = []
 
-    # -----------------------------
-    # 사람 탐지
-    # -----------------------------
     for box in result.boxes:
 
         class_id = int(box.cls[0])
@@ -136,10 +143,13 @@ while True:
             (area, x1, y1, x2, y2)
         )
 
-    # -----------------------------
-    # 가장 큰 사람 선택
-    # -----------------------------
+    # --------------------------------------------------------
+    # TARGET SELECTION
+    # --------------------------------------------------------
+
     if people:
+
+        tracking = True
 
         target = max(
             people,
@@ -151,46 +161,41 @@ while True:
         person_center_x = (x1 + x2) // 2
         person_center_y = (y1 + y2) // 2
 
-        # 원본 error
+        # ----------------------------------------------------
+        # POSITION ERROR
+        # ----------------------------------------------------
+
         raw_error = (
             person_center_x - frame_center_x
         ) / (width / 2)
 
-        # -----------------------------
-        # Smoothing
-        # -----------------------------
+        # ----------------------------------------------------
+        # SMOOTHING
+        # ----------------------------------------------------
+
         smoothed_error = (
             SMOOTHING_ALPHA * raw_error
             + (1 - SMOOTHING_ALPHA)
             * smoothed_error
         )
 
-        # -----------------------------
-        # 목표 각도 계산
-        # -----------------------------
+        # ----------------------------------------------------
+        # CONTROLLER
+        # ----------------------------------------------------
+
         target_servo_angle = calculate_target_angle(
             smoothed_error
         )
 
-        # -----------------------------
-        # 현재 각도를 목표 쪽으로 이동
-        # -----------------------------
         current_servo_angle = move_servo_toward(
             current_servo_angle,
             target_servo_angle
         )
 
-        # 방향
-        if smoothed_error < -DEAD_ZONE:
-            direction = "LEFT"
+        # ----------------------------------------------------
+        # DRAW PERSON
+        # ----------------------------------------------------
 
-        elif smoothed_error > DEAD_ZONE:
-            direction = "RIGHT"
-
-        else:
-            direction = "CENTER"
-
-        # 사람 박스
         cv2.rectangle(
             frame,
             (x1, y1),
@@ -199,7 +204,6 @@ while True:
             2
         )
 
-        # 사람 중심
         cv2.circle(
             frame,
             (person_center_x, person_center_y),
@@ -208,7 +212,6 @@ while True:
             -1
         )
 
-        # 화면 중심 → 사람 중심
         cv2.arrowedLine(
             frame,
             (frame_center_x, frame_center_y),
@@ -217,58 +220,25 @@ while True:
             3
         )
 
-        cv2.putText(
-            frame,
-            f"RAW: {raw_error:.2f}",
-            (20, 40),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
-            (0, 0, 255),
-            2
-        )
+    # --------------------------------------------------------
+    # NO TARGET
+    # --------------------------------------------------------
 
-        cv2.putText(
-            frame,
-            f"SMOOTH: {smoothed_error:.2f}",
-            (20, 70),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
-            (0, 255, 0),
-            2
-        )
+    else:
 
-        cv2.putText(
-            frame,
-            f"{direction}",
-            (20, 100),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
-            (255, 255, 0),
-            2
+        # 사람을 잃었을 때 error를 천천히 0으로 복귀
+        smoothed_error = (
+            (1 - SMOOTHING_ALPHA)
+            * smoothed_error
         )
-
-    # -----------------------------
-    # 서보 상태 표시
-    # -----------------------------
-    cv2.putText(
-        frame,
-        f"TARGET: {target_servo_angle} deg",
-        (20, 140),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.7,
-        (255, 0, 255),
-        2
+        
+        current_servo_angle = move_servo_toward(
+        current_servo_angle,
+        SERVO_CENTER
     )
-
-    cv2.putText(
-        frame,
-        f"CURRENT: {current_servo_angle} deg",
-        (20, 175),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.7,
-        (0, 255, 255),
-        2
-    )
+    # --------------------------------------------------------
+    # UI
+    # --------------------------------------------------------
 
     cv2.line(
         frame,
@@ -278,8 +248,63 @@ while True:
         2
     )
 
+    if tracking:
+        status = "TRACKING"
+    else:
+        status = "NO PERSON"
+
+    cv2.putText(
+        frame,
+        f"STATUS: {status}",
+        (20, 40),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.75,
+        (0, 255, 0) if tracking else (0, 0, 255),
+        2
+    )
+
+    cv2.putText(
+        frame,
+        f"RAW ERROR: {raw_error:.2f}",
+        (20, 75),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        (0, 0, 255),
+        2
+    )
+
+    cv2.putText(
+        frame,
+        f"SMOOTH ERROR: {smoothed_error:.2f}",
+        (20, 110),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        (0, 255, 0),
+        2
+    )
+
+    cv2.putText(
+        frame,
+        f"TARGET ANGLE: {target_servo_angle}",
+        (20, 145),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        (255, 0, 255),
+        2
+    )
+
+    cv2.putText(
+        frame,
+        f"CURRENT ANGLE: {current_servo_angle}",
+        (20, 180),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        (0, 255, 255),
+        2
+    )
+
     cv2.imshow(
-        "Physical AI - Servo Motion",
+        "Physical AI - Person Tracking System",
         frame
     )
 
